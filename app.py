@@ -309,6 +309,7 @@ YouTubeGPT enables you to ask questions and get detailed answers about both the 
 3. **Processing New Videos:** If the video isn't in the database, YouTubeGPT will download, process, and upload the data. This may take a few moments.
 4. **Ask Your Questions:** Once processed, you can ask questions about any aspect of the video, including audio, visuals, and specific moments.
 5. **Reuse and Share:** Videos are processed once. Afterward, any user can instantly retrieve the data and start a conversation.
+6. **New Video, New Conversation**: If you wish to stop your current conversation and ask about or process a new video, simply click the "New Chat" button in the top right corner.
 
 ### Get Started
 When you're ready, paste a YouTube URL into the input box to begin your interactive experience!
