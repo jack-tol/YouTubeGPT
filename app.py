@@ -17,10 +17,8 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 from bs4 import BeautifulSoup
 import re
 
-# Setup logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# Initialize the embeddings and vector store
 async def initialize_embeddings():
     logging.info("Initializing embeddings...")
     embedding = PineconeEmbeddings(model="multilingual-e5-large", batch_size=32)
@@ -36,7 +34,7 @@ def extract_video_id(url):
 
 async def download_youtube_video(url):
     logging.info(f"Downloading YouTube video from URL: {url}")
-    yt = YouTube(url, use_oauth=True, allow_oauth_cache=True)
+    yt = YouTube(url)
     video_title = yt.title
     video_stream = yt.streams.get_highest_resolution()
     video_stream.download(filename="video.mp4")
@@ -80,14 +78,12 @@ async def extract_frames(video_path, output_folder, interval_seconds):
     cap.release()
     logging.info(f"Frames extracted to folder: {output_folder}")
 
-# Define the Whisper model outside the function
 model_size = "tiny"
 model = WhisperModel(model_size, device="cuda", compute_type="float32")
 
 async def extract_transcript(audio_file_path):
     logging.info(f"Extracting transcript from audio file: {audio_file_path}")
     
-    # Transcribe the audio
     segments, _ = model.transcribe(audio_file_path, beam_size=5)
     
     def seconds_to_hhmmss(seconds):
@@ -95,7 +91,6 @@ async def extract_transcript(audio_file_path):
     
     transcript = ""
     
-    # Aggregate the transcription from each segment with timestamps
     for segment in segments:
         start_time = seconds_to_hhmmss(segment.start)
         end_time = seconds_to_hhmmss(segment.end)
@@ -176,7 +171,7 @@ def extract_channel_and_video_description(video_url):
     channel_name = channel_pattern.findall(str(soup))[0]
     
     logging.info(f"Extracted Channel Name: {channel_name}")
-    logging.info(f"Extracted Description: {video_description[:60]}...")  # Show only the first 60 characters for logging
+    logging.info(f"Extracted Description: {video_description[:60]}...")
 
     return channel_name, video_description
 
@@ -190,19 +185,16 @@ async def upload_video_data(vector_store, transcript, video_visual_descriptions,
     
     video_id = video_url.split("v=")[-1].split("&")[0]
 
-    # Upload the video title as a separate vector
     vector_store.add_texts(
         [video_title],
         metadatas=[{"video_id": video_id, "type": "video_title"}]
     )
 
-    # Upload channel name and video description
     vector_store.add_texts(
         [video_description],
         metadatas=[{"video_id": video_id, "type": "video_description"}]
     )
 
-    # Upload transcript chunks
     transcript_chunks = text_splitter.split_text(transcript)
     for chunk in transcript_chunks:
         vector_store.add_texts(
@@ -210,7 +202,6 @@ async def upload_video_data(vector_store, transcript, video_visual_descriptions,
             metadatas=[{"video_id": video_id, "type": "transcript"}]
         )
     
-    # Upload visual description chunks
     video_visual_descriptions_str = "\n".join(video_visual_descriptions)
     video_visual_description_chunks = text_splitter.split_text(video_visual_descriptions_str)
     for chunk in video_visual_description_chunks:
@@ -327,57 +318,34 @@ When you're ready, paste a YouTube URL into the input box to begin your interact
     parsed_url = str(raw_url.get('output'))
     logging.info(f"User entered URL: {parsed_url}")
 
-    # Extract the video ID from the URL
     video_id = extract_video_id(parsed_url)
 
-    # Check if the video already exists in the vector store
     video_exists = await does_video_exist_already(video_data_vectorstore, video_id)
 
     if video_exists:
         logging.info(f"The video_id {video_id} is already in the database.")
         await cl.Message(content="Video data retrieved. Please begin your conversation.").send()
     else:
-        # If video data does not exist, inform the user and start processing
         logging.info(f"The video_id {video_id} is not in the database. Proceeding to process and upload the video data.")
         await cl.Message(content="It seems that video isn't currently in our database. Don't worry, we are currently downloading, processing, and uploading it. This will only take a few moments.").send()
         
-        # Begin processing the video data
-        await asyncio.sleep(0)  # Allow the message to send before starting the heavy processing
+        await asyncio.sleep(0)
         video_file_path, video_title = await download_youtube_video(parsed_url)
-
-        # Extract channel name and video description
         channel_name, video_description = extract_channel_and_video_description(parsed_url)
-
-        # Extract audio from the video
         await extract_audio_from_video(video_file_path, "audio.wav")
-        
-        # Extract transcript from the audio
         transcript = await extract_transcript("audio.wav")
-        
-        # Extract frames from the video at a specified interval
         await extract_frames(video_file_path, "frames_output", interval_seconds=10)
-        
-        # Extract visual descriptions for each frame
         video_visual_descriptions = await extract_video_visual_descriptions()
-
-        # Upload the video data to the Pinecone vector store
         await upload_video_data(video_data_vectorstore, transcript, video_visual_descriptions, parsed_url, video_title, channel_name, video_description)
-        
-        # Clean up the files used during the process
         cleanup_files("video.mp4", "audio.wav", "frames_output")
-        
-        # Inform the user that processing is complete and they can start their conversation
         await cl.Message(content="Video data processing complete! You can now start asking questions about the video.").send()
     
-    # Retrieve the context for the video after processing (or if it already existed)
     video_title_context = retrieve_context_for_querying(video_data_vectorstore, video_id, "video_title")
     video_description_context = retrieve_context_for_querying(video_data_vectorstore, video_id, "video_description")
     transcript_context = retrieve_context_for_querying(video_data_vectorstore, video_id, "transcript")
     video_visual_description_context = retrieve_context_for_querying(video_data_vectorstore, video_id, "video_visual_description")
 
-    # Since these contexts are lists of strings (chunks), concatenate them if they have multiple elements
     video_title_str = "\n".join(video_title_context)
     video_description_str = "\n".join(video_description_context)
     
-    # Proceed to chat with the retrieved video context
     await chat_with_video(video_title_str, transcript_context, video_visual_description_context, channel_name, video_description_str)
