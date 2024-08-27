@@ -1,0 +1,9 @@
+pytubefix
+chainlit
+moviepy
+opencv-python
+openai
+langchain
+langchain-pinecone
+faster-whisper
+beautifulsoup4
