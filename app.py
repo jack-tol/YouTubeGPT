@@ -1,4 +1,3 @@
-import datetime
 from pytubefix import YouTube
 import chainlit as cl
 from moviepy.editor import VideoFileClip
@@ -12,10 +11,12 @@ from langchain_pinecone import *
 import asyncio
 import shutil
 import logging
-from faster_whisper import WhisperModel
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from bs4 import BeautifulSoup
 import re
+
+# Import the new transcript functions
+from split_and_transcribe import split_audio, transcribe_audio_chunks
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -78,26 +79,23 @@ async def extract_frames(video_path, output_folder, interval_seconds):
     cap.release()
     logging.info(f"Frames extracted to folder: {output_folder}")
 
-model_size = "tiny"
-model = WhisperModel(model_size, device="cuda", compute_type="float32")
-
 async def extract_transcript(audio_file_path):
-    logging.info(f"Extracting transcript from audio file: {audio_file_path}")
+    logging.info(f"Splitting audio file into chunks: {audio_file_path}")
     
-    segments, _ = model.transcribe(audio_file_path, beam_size=5)
+    # Split the audio into smaller chunks
+    chunk_files = await split_audio(audio_file_path)
     
-    def seconds_to_hhmmss(seconds):
-        return str(datetime.timedelta(seconds=int(seconds)))
+    logging.info("Starting transcription of audio chunks...")
     
-    transcript = ""
+    # Transcribe the audio chunks in parallel and return the combined transcript
+    transcript = await transcribe_audio_chunks(chunk_files)
     
-    for segment in segments:
-        start_time = seconds_to_hhmmss(segment.start)
-        end_time = seconds_to_hhmmss(segment.end)
-        transcript += f"{start_time} - {end_time}: {segment.text}\n"
+    # Log the entire transcript
+    logging.info(f"Full Transcript:\n{transcript}")
     
     logging.info("Transcript extraction complete")
     return transcript
+
 
 def encode_image(image_path):
     with open(image_path, "rb") as image_file:
@@ -185,16 +183,25 @@ async def upload_video_data(vector_store, transcript, video_visual_descriptions,
     
     video_id = video_url.split("v=")[-1].split("&")[0]
 
+    # Upload video title
     vector_store.add_texts(
         [video_title],
         metadatas=[{"video_id": video_id, "type": "video_title"}]
     )
 
+    # Upload video description
     vector_store.add_texts(
         [video_description],
         metadatas=[{"video_id": video_id, "type": "video_description"}]
     )
+    
+    # Upload channel name
+    vector_store.add_texts(
+        [channel_name],
+        metadatas=[{"video_id": video_id, "type": "channel_name"}]
+    )
 
+    # Upload transcript
     transcript_chunks = text_splitter.split_text(transcript)
     for chunk in transcript_chunks:
         vector_store.add_texts(
@@ -202,6 +209,7 @@ async def upload_video_data(vector_store, transcript, video_visual_descriptions,
             metadatas=[{"video_id": video_id, "type": "transcript"}]
         )
     
+    # Upload visual descriptions
     video_visual_descriptions_str = "\n".join(video_visual_descriptions)
     video_visual_description_chunks = text_splitter.split_text(video_visual_descriptions_str)
     for chunk in video_visual_description_chunks:
@@ -287,14 +295,25 @@ async def does_video_exist_already(vector_store, video_id):
     test_query = vector_store.similarity_search(query="Chunks Existence Check", k=1, filter=filter)
     return bool(test_query)
 
-def cleanup_files(video_file_path, audio_file_path, frames_folder):
+def cleanup_files(video_file_path, audio_file_path, frames_folder, audio_chunks_folder='audio_chunks'):
     logging.info("Cleaning up files...")
+
+    # Remove the video file if it exists
     if os.path.exists(video_file_path):
         os.remove(video_file_path)
+
+    # Remove the audio file if it exists
     if os.path.exists(audio_file_path):
         os.remove(audio_file_path)
+
+    # Remove the frames folder and its contents if it exists
     if os.path.exists(frames_folder):
         shutil.rmtree(frames_folder)
+    
+    # Remove the audio chunks folder and its contents if it exists
+    if os.path.exists(audio_chunks_folder):
+        shutil.rmtree(audio_chunks_folder)
+
     logging.info("Cleanup complete")
 
 @cl.on_chat_start
@@ -341,12 +360,17 @@ When you're ready, paste a YouTube URL into the input box to begin your interact
         cleanup_files("video.mp4", "audio.wav", "frames_output")
         await cl.Message(content="Video data processing complete! You can now start asking questions about the video.").send()
     
+    # Retrieve contexts
+    channel_name_context = retrieve_context_for_querying(video_data_vectorstore, video_id, "channel_name")
     video_title_context = retrieve_context_for_querying(video_data_vectorstore, video_id, "video_title")
     video_description_context = retrieve_context_for_querying(video_data_vectorstore, video_id, "video_description")
     transcript_context = retrieve_context_for_querying(video_data_vectorstore, video_id, "transcript")
     video_visual_description_context = retrieve_context_for_querying(video_data_vectorstore, video_id, "video_visual_description")
 
+    # Convert contexts to strings
+    channel_name_str = "\n".join(channel_name_context)
     video_title_str = "\n".join(video_title_context)
     video_description_str = "\n".join(video_description_context)
-    
-    await chat_with_video(video_title_str, transcript_context, video_visual_description_context, channel_name, video_description_str)
+
+    # Initialize chat with video
+    await chat_with_video(video_title_str, transcript_context, video_visual_description_context, channel_name_str, video_description_str)
