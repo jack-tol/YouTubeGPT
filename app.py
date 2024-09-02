@@ -1,10 +1,12 @@
-from pytubefix import YouTube
+import uuid
+from pytubefix import YouTube, Channel
 import chainlit as cl
+import aiofiles
+import aiohttp
 from moviepy.editor import VideoFileClip
 import cv2
 import os
 import base64
-import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from openai import AsyncOpenAI
 from langchain_pinecone import *
@@ -15,7 +17,6 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 from bs4 import BeautifulSoup
 import re
 
-# Import the new transcript functions
 from split_and_transcribe import split_audio, transcribe_audio_chunks
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -28,31 +29,64 @@ async def initialize_embeddings():
 
 video_data_vectorstore = asyncio.run(initialize_embeddings())
 
-def extract_video_id(url):
-    video_id = url.split("v=")[-1].split("&")[0]
-    logging.info(f"Extracted video ID: {video_id}")
-    return video_id
+def is_valid_youtube_url(url):
+    youtube_regex = (
+        r"^(https?://)?(www\.)?(youtube\.com|youtu\.be)/"
+        r"(watch\?v=|embed/|v/|youtu\.be/|.+\?v=)?([^&=%\?]{11})")
+    match = re.match(youtube_regex, url)
+    return bool(match)
 
-async def download_youtube_video(url):
-    logging.info(f"Downloading YouTube video from URL: {url}")
-    yt = YouTube(url)
+def extract_video_id(url):
+    # Regex patterns for different YouTube URL formats
+    patterns = [
+        r"(?:v=|v/|embed/|youtu\.be/|watch\?v=|be/|youtu\.be/)([^&=%\?]{11})"
+    ]
+    
+    video_id = None
+    for pattern in patterns:
+        match = re.search(pattern, url)
+        if match:
+            video_id = match.group(1)
+            break
+    
+    if video_id:
+        logging.info(f"Extracted video ID: {video_id}")
+        return video_id
+    else:
+        logging.error(f"Could not extract video ID from URL: {url}")
+        return None
+
+async def download_youtube_video(url, session_id):
+    logging.info(f"[{session_id}] Downloading YouTube video from URL: {url}")
+    yt = YouTube(url, use_oauth=True, allow_oauth_cache=True, token_file="tokens.json")
     video_title = yt.title
     video_stream = yt.streams.get_highest_resolution()
-    video_stream.download(filename="video.mp4")
-    logging.info(f"Downloaded video titled: {video_title}")
-    return "video.mp4", video_title
+    video_path = f"{session_id}_video.mp4"
+    await asyncio.to_thread(video_stream.download, filename=video_path)
+    logging.info(f"[{session_id}] Downloaded video titled: {video_title}")
+    return video_path, video_title
 
-async def extract_audio_from_video(video_file_path, output_audio_path):
-    logging.info(f"Extracting audio from video file: {video_file_path}")
+async def extract_audio_from_video(video_file_path, session_id):
+    output_audio_path = f"{session_id}_audio.wav"
+    logging.info(f"[{session_id}] Extracting audio from video file: {video_file_path}")
+    await asyncio.to_thread(extract_audio, video_file_path, output_audio_path)
+    logging.info(f"[{session_id}] Audio extracted to: {output_audio_path}")
+    return output_audio_path
+
+def extract_audio(video_file_path, output_audio_path):
     video_clip = VideoFileClip(video_file_path)
     audio_clip = video_clip.audio
     audio_clip.write_audiofile(output_audio_path, codec='pcm_s16le')
     audio_clip.close()
     video_clip.close()
-    logging.info(f"Audio extracted to: {output_audio_path}")
 
-async def extract_frames(video_path, output_folder, interval_seconds):
-    logging.info(f"Extracting frames from video: {video_path}")
+async def extract_frames(video_path, session_id, interval_seconds):
+    output_folder = f"{session_id}_frames_output"
+    logging.info(f"[{session_id}] Extracting frames from video: {video_path}")
+    await asyncio.to_thread(extract_frames_sync, video_path, output_folder, interval_seconds)
+    logging.info(f"[{session_id}] Frames extracted to folder: {output_folder}")
+
+def extract_frames_sync(video_path, output_folder, interval_seconds):
     if not os.path.exists(output_folder):
         os.makedirs(output_folder)
 
@@ -77,33 +111,28 @@ async def extract_frames(video_path, output_folder, interval_seconds):
         frame_count += frame_interval
 
     cap.release()
-    logging.info(f"Frames extracted to folder: {output_folder}")
 
-async def extract_transcript(audio_file_path):
-    logging.info(f"Splitting audio file into chunks: {audio_file_path}")
+async def extract_transcript(audio_file_path, session_id):
+    logging.info(f"[{session_id}] Splitting audio file into chunks: {audio_file_path}")
     
-    # Split the audio into smaller chunks
-    chunk_files = await split_audio(audio_file_path)
+    # Ensure session_id is passed to split_audio
+    chunk_files = await split_audio(audio_file_path, session_id)
     
-    logging.info("Starting transcription of audio chunks...")
+    logging.info(f"[{session_id}] Starting transcription of audio chunks...")
     
-    # Transcribe the audio chunks in parallel and return the combined transcript
-    transcript = await transcribe_audio_chunks(chunk_files)
+    # Ensure session_id is passed to transcribe_audio_chunks
+    transcript = await transcribe_audio_chunks(chunk_files, session_id)
     
-    # Log the entire transcript
-    logging.info(f"Full Transcript:\n{transcript}")
-    
-    logging.info("Transcript extraction complete")
+    logging.info(f"[{session_id}] Transcript extraction complete")
     return transcript
 
+async def encode_image(image_path):
+    async with aiofiles.open(image_path, "rb") as image_file:
+        return base64.b64encode(await image_file.read()).decode('utf-8')
 
-def encode_image(image_path):
-    with open(image_path, "rb") as image_file:
-        return base64.b64encode(image_file.read()).decode('utf-8')
-
-async def process_image(api_key, image_path):
-    logging.info(f"Processing image: {image_path}")
-    base64_image = encode_image(image_path)
+async def process_image(api_key, image_path, session_id):
+    logging.info(f"[{session_id}] Processing image: {image_path}")
+    base64_image = await encode_image(image_path)
     timestamp = os.path.basename(image_path).split('.')[0]
     timestamp = timestamp.replace('_', ':')
 
@@ -113,95 +142,119 @@ async def process_image(api_key, image_path):
     }
     
     payload = {
-        "model": "gpt-4o",
+        "model": "gpt-4o-mini",
         "messages": [
             {
                 "role": "user",
                 "content": [
-                    {"type": "text", "text": "What's in this image? Tell me about the big details and the small details. Be descriptive, but also concise."},
+                    {"type": "text", "text": "What's in this image? Tell me about the big details and the small details. Be descriptive, but also concise. Make it in paragraph form, and limit yourself to just 1 paragraph to accurately describe the image. Don't use any markdown formatting though, return only the paragraph in text."},
                     {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
                 ]
             }
         ]
     }
     
-    response = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload)
-    
-    if response.status_code == 200:
-        description = response.json().get('choices', [])[0].get('message', {}).get('content', 'No description found.')
-        return f"{timestamp}: {description}"
-    else:
-        logging.error(f"Error processing image: {response.status_code}")
-        return f"{timestamp}: Error {response.status_code}"
+    async with aiohttp.ClientSession() as session:
+        async with session.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload) as response:
+            if response.status == 200:
+                description = (await response.json()).get('choices', [])[0].get('message', {}).get('content', 'No description found.')
+                return f"{timestamp}: {description}"
+            else:
+                logging.error(f"[{session_id}] Error processing image: {response.status}")
+                return f"{timestamp}: Error {response.status}"
 
-async def extract_video_visual_descriptions():
-    logging.info("Extracting visual descriptions from images...")
+async def extract_video_visual_descriptions(session_id):
+    logging.info(f"[{session_id}] Extracting visual descriptions from images...")
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
         raise ValueError("OPENAI_API_KEY environment variable is not set.")
     
-    image_folder = "frames_output"
+    image_folder = f"{session_id}_frames_output"
     image_paths = [os.path.join(image_folder, img) for img in os.listdir(image_folder) if img.endswith(('.jpg', '.jpeg', '.png'))]
     
     descriptions = []
     
-    with ThreadPoolExecutor() as executor:
-        futures = {executor.submit(asyncio.run, process_image(api_key, img)): img for img in image_paths}
-        
-        for future in as_completed(futures):
-            descriptions.append(future.result())
+    tasks = [process_image(api_key, img, session_id) for img in image_paths]
+    
+    descriptions = await asyncio.gather(*tasks)
     
     descriptions.sort()
     
-    logging.info("Image descriptions extracted")
+    logging.info(f"[{session_id}] Image descriptions extracted")
     return descriptions
 
-def extract_channel_and_video_description(video_url):
-    logging.info(f"Extracting channel name and video description from URL: {video_url}")
+import os
+import logging
+import googleapiclient.discovery
+import re
+
+async def extract_channel_and_video_description(video_url, session_id):
+    logging.info(f"[{session_id}] Extracting channel name and video description from URL: {video_url}")
     
-    response = requests.get(video_url)
-    soup = BeautifulSoup(response.content, 'html.parser')
-    
-    description_pattern = re.compile(r'(?<=shortDescription":").*(?=","isCrawlable)')
-    video_description = description_pattern.findall(str(soup))[0].replace('\\n','\n')
-    
-    channel_pattern = re.compile(r'(?<=ownerChannelName":").*?(?=")')
-    channel_name = channel_pattern.findall(str(soup))[0]
-    
-    logging.info(f"Extracted Channel Name: {channel_name}")
-    logging.info(f"Extracted Description: {video_description[:60]}...")
+    # Initialize channel name and video description
+    channel_name = ""
+    video_description = ""
+
+    try:
+        # Fetch the API key from environment variables
+        api_key = os.getenv('YOUTUBE_API_KEY')
+        if not api_key:
+            raise ValueError("YouTube API key is not set in environment variables.")
+
+        # Function to get video ID from URL
+        def get_video_id(youtube_url):
+            video_id_match = re.search(r'(?:v=|\/)([0-9A-Za-z_-]{11}).*', youtube_url)
+            if video_id_match:
+                return video_id_match.group(1)
+            else:
+                raise ValueError("Invalid YouTube URL")
+
+        # Extract the video ID
+        video_id = get_video_id(video_url)
+        
+        # Build the YouTube API client
+        youtube = googleapiclient.discovery.build('youtube', 'v3', developerKey=api_key)
+        
+        # Make the API request to get video details
+        video_request = youtube.videos().list(part="snippet", id=video_id)
+        video_response = video_request.execute()
+        
+        # Extract the video details
+        video_snippet = video_response['items'][0]['snippet']
+        channel_name = video_snippet['channelTitle']
+        video_description = video_snippet['description']
+        
+        logging.info(f"[{session_id}] Extracted Channel Name: {channel_name}")
+        logging.info(f"[{session_id}] Extracted Video Description: {video_description[:60]}...")
+        
+    except Exception as e:
+        logging.error(f"[{session_id}] Error extracting video description and channel name: {e}")
 
     return channel_name, video_description
 
-async def upload_video_data(vector_store, transcript, video_visual_descriptions, video_url, video_title, channel_name, video_description):
-    logging.info("Uploading video data to Pinecone vector store...")
+async def upload_video_data(vector_store, transcript, video_visual_descriptions, video_title, channel_name, video_description, video_id, session_id):
+    logging.info(f"[{session_id}] Uploading video data to Pinecone vector store...")
 
     text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=5000,
-        chunk_overlap=50
+        chunk_size=10000,
+        chunk_overlap=0
     )
-    
-    video_id = video_url.split("v=")[-1].split("&")[0]
 
-    # Upload video title
     vector_store.add_texts(
         [video_title],
         metadatas=[{"video_id": video_id, "type": "video_title"}]
     )
 
-    # Upload video description
     vector_store.add_texts(
         [video_description],
         metadatas=[{"video_id": video_id, "type": "video_description"}]
     )
     
-    # Upload channel name
     vector_store.add_texts(
         [channel_name],
         metadatas=[{"video_id": video_id, "type": "channel_name"}]
     )
 
-    # Upload transcript
     transcript_chunks = text_splitter.split_text(transcript)
     for chunk in transcript_chunks:
         vector_store.add_texts(
@@ -209,7 +262,6 @@ async def upload_video_data(vector_store, transcript, video_visual_descriptions,
             metadatas=[{"video_id": video_id, "type": "transcript"}]
         )
     
-    # Upload visual descriptions
     video_visual_descriptions_str = "\n".join(video_visual_descriptions)
     video_visual_description_chunks = text_splitter.split_text(video_visual_descriptions_str)
     for chunk in video_visual_description_chunks:
@@ -218,23 +270,50 @@ async def upload_video_data(vector_store, transcript, video_visual_descriptions,
             metadatas=[{"video_id": video_id, "type": "video_visual_description"}]
         )
     
-    logging.info("Video data upload complete")
-    
-    await asyncio.sleep(5)
+    logging.info(f"[{session_id}] Video data upload complete")
 
-def retrieve_context_for_querying(vector_store, video_id, context_type):
-    logging.info(f"Retrieving {context_type} context for video ID: {video_id}")
+def cleanup_files(session_id):
+    logging.info(f"[{session_id}] Cleaning up files...")
+
+    video_file_path = f"{session_id}_video.mp4"
+    if os.path.exists(video_file_path):
+        os.remove(video_file_path)
+
+    audio_file_path = f"{session_id}_audio.wav"
+    if os.path.exists(audio_file_path):
+        os.remove(audio_file_path)
+
+    frames_folder = f"{session_id}_frames_output"
+    if os.path.exists(frames_folder):
+        shutil.rmtree(frames_folder)
+    
+    # Clean up the session-specific directory if it exists
+    session_dir = f"{session_id}"
+    if os.path.exists(session_dir):
+        shutil.rmtree(session_dir)
+        logging.info(f"[{session_id}] Cleaned up session directory.")
+
+    logging.info(f"[{session_id}] Cleanup complete")
+
+async def does_video_exist_already(vector_store, video_id, session_id):
+    logging.info(f"[{session_id}] Checking if video already exists in the database: {video_id}")
+    filter = {"video_id": video_id}
+    test_query = vector_store.similarity_search(query="Chunks Existence Check", k=1, filter=filter)
+    return bool(test_query)
+
+async def retrieve_context_for_querying(vector_store, video_id, context_type, session_id):
+    logging.info(f"[{session_id}] Retrieving {context_type} context for video ID: {video_id}")
     
     filter = {"video_id": video_id, "type": context_type}
     retrieved_context = vector_store.similarity_search(query="Context retrieval search", k=100, filter=filter)
 
     context = [chunk.page_content for chunk in retrieved_context]
     
-    logging.info(f"{context_type.capitalize()} context retrieved: {len(context)} chunks found")
+    logging.info(f"[{session_id}] {context_type.capitalize()} context retrieved: {len(context)} chunks found")
     return context
 
-async def chat_with_video(video_title, transcript_context, video_visual_description_context, channel_name, video_description):
-    logging.info(f"Starting chat with video: {video_title}")
+async def chat_with_video(session_id, video_title, transcript_context, video_visual_description_context, channel_name, video_description):
+    logging.info(f"[{session_id}] Starting chat with video: {video_title}")
     client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
     transcript_str = "\n".join(transcript_context)
@@ -265,11 +344,11 @@ async def chat_with_video(video_title, transcript_context, video_visual_descript
         [{"role": "system", "content": system_message}],
     )
 
-    logging.info(f"System prompt being sent to language model:\n{system_message}")
+    logging.info(f"[{session_id}] System prompt being sent to language model:\n{system_message}")
     
     @cl.on_message
     async def handle_message(message: cl.Message):
-        logging.info("User message received")
+        logging.info(f"[{session_id}] User message received")
         message_history = cl.user_session.get("message_history")
         message_history.append({"role": "user", "content": message.content})
 
@@ -277,7 +356,7 @@ async def chat_with_video(video_title, transcript_context, video_visual_descript
         await msg.send()
 
         stream = await client.chat.completions.create(
-            messages=message_history, stream=True, model="gpt-4o", temperature=0.7
+            messages=message_history, stream=True, model="gpt-4o-mini", temperature=0.7
         )
 
         async for part in stream:
@@ -287,38 +366,20 @@ async def chat_with_video(video_title, transcript_context, video_visual_descript
         message_history.append({"role": "assistant", "content": msg.content})
         await msg.update()
 
-    logging.info("Chat initialized with video context")
+    logging.info(f"[{session_id}] Chat initialized with video context")
 
-async def does_video_exist_already(vector_store, video_id):
-    logging.info(f"Checking if video already exists in the database: {video_id}")
-    filter = {"video_id": video_id}
-    test_query = vector_store.similarity_search(query="Chunks Existence Check", k=1, filter=filter)
-    return bool(test_query)
+import asyncio
 
-def cleanup_files(video_file_path, audio_file_path, frames_folder, audio_chunks_folder='audio_chunks'):
-    logging.info("Cleaning up files...")
+import asyncio
 
-    # Remove the video file if it exists
-    if os.path.exists(video_file_path):
-        os.remove(video_file_path)
-
-    # Remove the audio file if it exists
-    if os.path.exists(audio_file_path):
-        os.remove(audio_file_path)
-
-    # Remove the frames folder and its contents if it exists
-    if os.path.exists(frames_folder):
-        shutil.rmtree(frames_folder)
-    
-    # Remove the audio chunks folder and its contents if it exists
-    if os.path.exists(audio_chunks_folder):
-        shutil.rmtree(audio_chunks_folder)
-
-    logging.info("Cleanup complete")
+import asyncio
 
 @cl.on_chat_start
 async def main():
-    text_content = """
+    session_id = str(uuid.uuid4())
+
+    # Welcome message displayed once at the start
+    welcome_message = """
 ## Welcome to YouTubeGPT
 YouTubeGPT enables you to ask questions and get detailed answers about both the audio and visual components of a video. It understands the sequence of events, allowing you to explore how things happened and in what order, offering a complete and immersive understanding of the content.
 
@@ -332,45 +393,137 @@ YouTubeGPT enables you to ask questions and get detailed answers about both the 
 
 ### Get Started
 When you're ready, paste a YouTube URL into the input box to begin your interactive experience!
-
 """
-    raw_url = await cl.AskUserMessage(content=text_content, timeout=3600).send()
-    parsed_url = str(raw_url.get('output'))
-    logging.info(f"User entered URL: {parsed_url}")
 
-    video_id = extract_video_id(parsed_url)
+    # Message to prompt the user for a valid input
+    prompt_message = "Please enter a valid YouTube URL."
 
-    video_exists = await does_video_exist_already(video_data_vectorstore, video_id)
+    # Display the welcome message and prompt for the first time
+    raw_url = await cl.AskUserMessage(content=welcome_message, timeout=3600).send()
 
-    if video_exists:
-        logging.info(f"The video_id {video_id} is already in the database.")
-        await cl.Message(content="Video data retrieved. Please begin your conversation.").send()
-    else:
-        logging.info(f"The video_id {video_id} is not in the database. Proceeding to process and upload the video data.")
-        await cl.Message(content="It seems that video isn't currently in our database. Don't worry, we are currently downloading, processing, and uploading it. This will only take a few moments.").send()
-        
-        await asyncio.sleep(0)
-        video_file_path, video_title = await download_youtube_video(parsed_url)
-        channel_name, video_description = extract_channel_and_video_description(parsed_url)
-        await extract_audio_from_video(video_file_path, "audio.wav")
-        transcript = await extract_transcript("audio.wav")
-        await extract_frames(video_file_path, "frames_output", interval_seconds=10)
-        video_visual_descriptions = await extract_video_visual_descriptions()
-        await upload_video_data(video_data_vectorstore, transcript, video_visual_descriptions, parsed_url, video_title, channel_name, video_description)
-        cleanup_files("video.mp4", "audio.wav", "frames_output")
-        await cl.Message(content="Video data processing complete! You can now start asking questions about the video.").send()
-    
-    # Retrieve contexts
-    channel_name_context = retrieve_context_for_querying(video_data_vectorstore, video_id, "channel_name")
-    video_title_context = retrieve_context_for_querying(video_data_vectorstore, video_id, "video_title")
-    video_description_context = retrieve_context_for_querying(video_data_vectorstore, video_id, "video_description")
-    transcript_context = retrieve_context_for_querying(video_data_vectorstore, video_id, "transcript")
-    video_visual_description_context = retrieve_context_for_querying(video_data_vectorstore, video_id, "video_visual_description")
+    while True:
+        # Check if raw_url is None or if there's no output
+        if raw_url is None or not raw_url.get('output'):
+            await cl.Message(content="No input received. Please enter a YouTube URL:").send()
+            raw_url = await cl.AskUserMessage(content=prompt_message, timeout=3600).send()
+            continue
 
-    # Convert contexts to strings
-    channel_name_str = "\n".join(channel_name_context)
-    video_title_str = "\n".join(video_title_context)
-    video_description_str = "\n".join(video_description_context)
+        parsed_url = str(raw_url.get('output'))
+        logging.info(f"[{session_id}] User entered URL: {parsed_url}")
 
-    # Initialize chat with video
-    await chat_with_video(video_title_str, transcript_context, video_visual_description_context, channel_name_str, video_description_str)
+        # Validate the YouTube URL and extract the video_id
+        video_id = extract_video_id(parsed_url)
+
+        if not video_id:
+            # Prompt the user to enter a valid YouTube URL
+            raw_url = await cl.AskUserMessage(content=prompt_message, timeout=3600).send()
+            continue  # Go back to asking for user input with the prompt message
+
+        # Construct the full YouTube URL using the extracted video_id
+        video_url = f"https://www.youtube.com/watch?v={video_id}"
+        logging.info(f"[{session_id}] Constructed full YouTube URL: {video_url}")
+
+        # Check if video already exists in the database
+        logging.info(f"[{session_id}] Checking if video already exists in the database: {video_id}")
+        video_exists = await does_video_exist_already(video_data_vectorstore, video_id, session_id)
+
+        if video_exists:
+            logging.info(f"[{session_id}] The video_id {video_id} is already in the database.")
+            
+            # Update UI: Video already processed, retrieving context
+            status_msg = cl.Message(content="**Video already processed. Retrieving context...**")
+            await status_msg.send()
+
+            # Force the event loop to process the UI update before retrieving context
+            await asyncio.sleep(0)
+            
+            # Retrieve context sequentially
+            channel_name_context = await retrieve_context_for_querying(video_data_vectorstore, video_id, "channel_name", session_id)
+            video_title_context = await retrieve_context_for_querying(video_data_vectorstore, video_id, "video_title", session_id)
+            video_description_context = await retrieve_context_for_querying(video_data_vectorstore, video_id, "video_description", session_id)
+            transcript_context = await retrieve_context_for_querying(video_data_vectorstore, video_id, "transcript", session_id)
+            video_visual_description_context = await retrieve_context_for_querying(video_data_vectorstore, video_id, "video_visual_description", session_id)
+
+            # Update UI: Video data retrieved, user can now start asking questions
+            status_msg.content = "**Video data retrieved. You can now start asking questions.**"
+            await status_msg.update()
+
+        else:
+            logging.info(f"[{session_id}] The video_id {video_id} is not in the database. Proceeding to process and upload the video data.")
+            
+            # Update 1: Video is being downloaded
+            status_msg = cl.Message(content="**It seems that video isn't currently in our database. The video is being downloaded...**")
+            await status_msg.send()
+
+            # Download the video
+            video_file_path, video_title = await download_youtube_video(video_url, session_id)
+            logging.info(f"[{session_id}] Video downloaded successfully.")
+
+            # Update 2: Video downloaded, proceeding with metadata extraction
+            status_msg.content = "**Video downloaded successfully. Proceeding with metadata extraction...**"
+            await status_msg.update()
+
+            # Extract metadata
+            channel_name, video_description = await extract_channel_and_video_description(video_url, session_id)
+            logging.info(f"[{session_id}] Metadata extracted.")
+
+            # Update 3: Metadata extracted, audio processing underway
+            status_msg.content = "**Metadata extracted. Audio processing underway...**"
+            await status_msg.update()
+
+            # Extract audio and process transcript
+            audio_file_path = await extract_audio_from_video(video_file_path, session_id)
+            transcript = await extract_transcript(audio_file_path, session_id)
+            logging.info(f"[{session_id}] Audio processing completed.")
+
+            # Update 4: Audio processing completed, starting visual processing
+            status_msg.content = "**Audio processing completed. Starting visual processing...**"
+            await status_msg.update()
+
+            # Extract frames and process image descriptions
+            await extract_frames(video_file_path, session_id, interval_seconds=10)
+            video_visual_descriptions = await extract_video_visual_descriptions(session_id)
+            logging.info(f"[{session_id}] Visual processing completed.")
+
+            # Update 5: Visual processing completed, proceeding to upload the data
+            status_msg.content = "**Visual processing completed. Proceeding to upload the data...**"
+            await status_msg.update()
+
+            # Yield control back to the event loop to ensure the UI update is processed
+            await asyncio.sleep(0)
+
+            # Upload video data
+            await upload_video_data(video_data_vectorstore, transcript, video_visual_descriptions, video_title, channel_name, video_description, video_id, session_id)
+            logging.info(f"[{session_id}] Upload complete.")
+
+            # Update 6: Upload complete, retrieving video data
+            status_msg.content = "**Upload complete. Retrieving video data...**"
+            await status_msg.update()
+
+            cleanup_files(session_id)
+
+            # Notify the user that context retrieval is starting
+            logging.info(f"[{session_id}] Retrieving video data context.")
+            status_msg.content = "**Retrieving video data context...**"
+            await status_msg.update()
+
+            # Retrieve context sequentially
+            channel_name_context = await retrieve_context_for_querying(video_data_vectorstore, video_id, "channel_name", session_id)
+            video_title_context = await retrieve_context_for_querying(video_data_vectorstore, video_id, "video_title", session_id)
+            video_description_context = await retrieve_context_for_querying(video_data_vectorstore, video_id, "video_description", session_id)
+            transcript_context = await retrieve_context_for_querying(video_data_vectorstore, video_id, "transcript", session_id)
+            video_visual_description_context = await retrieve_context_for_querying(video_data_vectorstore, video_id, "video_visual_description", session_id)
+
+            # Update UI: Video data retrieved, user can now start asking questions
+            status_msg.content = "**Video data retrieved. You can now start asking questions.**"
+            await status_msg.update()
+
+        # Prepare contexts for the conversation
+        channel_name_str = "\n".join(channel_name_context)
+        video_title_str = "\n".join(video_title_context)
+        video_description_str = "\n".join(video_description_context)
+
+        # Start the chat with the video context
+        await chat_with_video(session_id, video_title_str, transcript_context, video_visual_description_context, channel_name_str, video_description_str)
+
+        break

@@ -1,9 +1,11 @@
-pytubefix
-chainlit
+pytubefix==6.14.0
+chainlit==1.1.300
+aiofiles
+aiohttp
 moviepy
 opencv-python
 openai
 langchain
-langchain-pinecone
-faster-whisper
+langchain_pinecone
 beautifulsoup4
+pydub

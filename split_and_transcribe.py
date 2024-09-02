@@ -1,11 +1,66 @@
 import os
+import uuid
 from pydub import AudioSegment
-from openai import OpenAI
-import concurrent.futures
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import timedelta
 import logging
+import shutil
+import aiohttp
+import asyncio
 
-async def split_audio(file_path, chunk_size_mb=20):
-    output_dir = 'audio_chunks'
+API_KEY = os.getenv("OPENAI_API_KEY")
+API_URL = "https://api.openai.com/v1/audio/transcriptions"
+
+# Function to convert seconds to HH:MM:SS format
+def format_time(seconds):
+    return str(timedelta(seconds=round(seconds)))
+
+# Asynchronous function to process a single audio chunk
+async def process_chunk(file_info, session_id):
+    file_path, chunk_start_time = file_info
+    headers = {
+        "Authorization": f"Bearer {API_KEY}"
+    }
+    
+    # Use FormData to handle file upload
+    data = aiohttp.FormData()
+    data.add_field('model', 'whisper-1')
+    data.add_field('response_format', 'verbose_json')
+    data.add_field('timestamp_granularities', 'segment')
+    data.add_field('file', open(file_path, 'rb'), filename=os.path.basename(file_path), content_type='audio/wav')
+    
+    async with aiohttp.ClientSession() as session:
+        async with session.post(API_URL, headers=headers, data=data) as response:
+            if response.status == 200:
+                transcript = await response.json()
+            else:
+                logging.error(f"[{session_id}] Error in transcription request: {response.status}")
+                return [], chunk_start_time  # Return an empty list if there was an error
+    
+    adjusted_segments = []
+    for segment in transcript.get('segments', []):
+        # Adjust the start and end time based on the chunk's start time
+        segment['start'] += chunk_start_time
+        segment['end'] += chunk_start_time
+        adjusted_segments.append(segment)
+    
+    logging.info(f"[{session_id}] Processed chunk starting at {format_time(chunk_start_time)}")
+    return adjusted_segments, chunk_start_time
+
+# Function to format the transcript segments
+def format_transcript(segments, session_id):
+    final_transcript = ""
+    for segment in segments:
+        start_time = format_time(segment['start'])
+        end_time = format_time(segment['end'])
+        text = segment['text']
+        final_transcript += f"{start_time} - {end_time} - {text}\n"
+    logging.info(f"[{session_id}] Full Transcript Generated")
+    return final_transcript
+
+# Function to split the audio file into chunks
+async def split_audio(file_path, session_id, chunk_size_mb=20):
+    output_dir = os.path.join(session_id, 'audio_chunks')
     os.makedirs(output_dir, exist_ok=True)
     
     audio = AudioSegment.from_file(file_path)
@@ -20,65 +75,25 @@ async def split_audio(file_path, chunk_size_mb=20):
         chunk = audio[i:i + chunk_duration_ms]
         chunk_filename = os.path.join(output_dir, f'chunk_{i // chunk_duration_ms}.wav')
         chunk.export(chunk_filename, format="wav")
-        chunk_files.append((chunk_filename, i))  # Save file and start time
-        print(f'Created: {chunk_filename}')
+        chunk_files.append((chunk_filename, i // 1000))  # Save file and start time in seconds
+        logging.info(f'[{session_id}] Created audio chunk: {chunk_filename}')
     
     return chunk_files
 
-def transcribe_chunk(client, chunk_file, start_offset_ms):
-    logging.info(f"Transcribing chunk: {chunk_file}")
+# Main function to process the audio file
+async def transcribe_audio_chunks(chunk_files, session_id):
+    # Step 1: Transcribe the audio chunks in parallel using asyncio.gather
+    tasks = [process_chunk(file_info, session_id) for file_info in chunk_files]
+    results = await asyncio.gather(*tasks)
+    
+    # Step 2: Sort all transcripts based on chunk start time
+    all_transcripts = sorted(results, key=lambda x: x[1])
+    
+    # Step 3: Concatenate and format the final transcript
+    final_segments = []
+    for segments, _ in all_transcripts:
+        final_segments.extend(segments)
+    
+    final_transcript = format_transcript(final_segments, session_id)
 
-    with open(chunk_file, "rb") as audio_file:
-        transcription = client.audio.transcriptions.create(
-            model="whisper-1", 
-            file=audio_file, 
-            response_format="verbose_json",
-            timestamp_granularities=["segment"]
-        )
-    
-    transcription_dict = transcription.to_dict()
-    segments = transcription_dict['segments']
-    
-    adjusted_segments = []
-    for segment in segments:
-        start_time = segment['start'] + start_offset_ms / 1000  # Convert to seconds
-        end_time = segment['end'] + start_offset_ms / 1000
-        text = segment['text']
-        start_time_formatted = f"{int(start_time//3600):02}:{int((start_time%3600)//60):02}:{int(start_time%60):02}"
-        end_time_formatted = f"{int(end_time//3600):02}:{int((end_time%3600)//60):02}:{int(end_time%60):02}"
-        adjusted_segments.append((start_time, f"{start_time_formatted} - {end_time_formatted} - {text}"))
-    
-    logging.info(f"Finished transcribing chunk: {chunk_file}")
-    
-    return adjusted_segments
-
-
-async def transcribe_audio_chunks(chunk_files):
-    client = OpenAI()
-
-    def transcribe_and_collect(chunk_file, start_offset):
-        return transcribe_chunk(client, chunk_file, start_offset)
-
-    all_transcriptions = []
-
-    # Use ThreadPoolExecutor to run transcription in parallel
-    with concurrent.futures.ThreadPoolExecutor() as executor:
-        futures = [
-            executor.submit(transcribe_and_collect, chunk_file, start_offset)
-            for chunk_file, start_offset in chunk_files
-        ]
-        
-        for future in concurrent.futures.as_completed(futures):
-            try:
-                transcription = future.result()
-                all_transcriptions.extend(transcription)
-            except Exception as exc:
-                print(f'Error during transcription: {exc}')
-    
-    # Sort transcriptions by start time to ensure correct order
-    all_transcriptions.sort(key=lambda x: x[0])
-    
-    # Combine the ordered transcriptions into a single string
-    transcript = "\n".join(transcription for _, transcription in all_transcriptions)
-    
-    return transcript
+    return final_transcript
