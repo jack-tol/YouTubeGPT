@@ -13,6 +13,7 @@ import asyncio
 import shutil
 import logging
 from langchain.text_splitter import RecursiveCharacterTextSplitter
+from tenacity import retry, stop_after_attempt, wait_random_exponential
 import re
 
 from split_and_transcribe import split_audio, transcribe_audio_chunks
@@ -128,6 +129,7 @@ async def encode_image(image_path):
     async with aiofiles.open(image_path, "rb") as image_file:
         return base64.b64encode(await image_file.read()).decode('utf-8')
 
+@retry(wait=wait_random_exponential(min=1, max=60), stop=stop_after_attempt(6))
 async def process_image(api_key, image_path, session_id):
     logging.info(f"[{session_id}] Processing image: {image_path}")
     base64_image = await encode_image(image_path)
@@ -145,7 +147,7 @@ async def process_image(api_key, image_path, session_id):
             {
                 "role": "user",
                 "content": [
-                    {"type": "text", "text": "What's in this image? Tell me about the big details and the small details. Be descriptive, but also concise. Make it in paragraph form, and limit yourself to just 1 paragraph to accurately describe the image. Don't use any markdown formatting though, return only the paragraph in text."},
+                    {"type": "text", "text": "What's in this image? Tell me about the big details and the small details..."},
                     {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
                 ]
             }
@@ -160,6 +162,7 @@ async def process_image(api_key, image_path, session_id):
             else:
                 logging.error(f"[{session_id}] Error processing image: {response.status}")
                 return f"{timestamp}: Error {response.status}"
+
 
 async def extract_video_visual_descriptions(session_id):
     logging.info(f"[{session_id}] Extracting visual descriptions from images...")
@@ -234,25 +237,29 @@ async def upload_video_data(vector_store, transcript, video_visual_descriptions,
     logging.info(f"[{session_id}] Uploading video data to Pinecone vector store...")
 
     text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=10000,
+        chunk_size=8000,
         chunk_overlap=0
     )
 
+    # Upload video title
     vector_store.add_texts(
         [video_title],
         metadatas=[{"video_id": video_id, "type": "video_title"}]
     )
 
+    # Upload video description
     vector_store.add_texts(
         [video_description],
         metadatas=[{"video_id": video_id, "type": "video_description"}]
     )
     
+    # Upload channel name
     vector_store.add_texts(
         [channel_name],
         metadatas=[{"video_id": video_id, "type": "channel_name"}]
     )
 
+    # Upload transcript chunks
     transcript_chunks = text_splitter.split_text(transcript)
     for chunk in transcript_chunks:
         vector_store.add_texts(
@@ -260,14 +267,21 @@ async def upload_video_data(vector_store, transcript, video_visual_descriptions,
             metadatas=[{"video_id": video_id, "type": "transcript"}]
         )
     
+    # Process and upload video visual descriptions in batches
     video_visual_descriptions_str = "\n".join(video_visual_descriptions)
     video_visual_description_chunks = text_splitter.split_text(video_visual_descriptions_str)
-    for chunk in video_visual_description_chunks:
+
+    batch_size = 10  # Adjust batch size as necessary
+    for i in range(0, len(video_visual_description_chunks), batch_size):
+        batch = video_visual_description_chunks[i:i + batch_size]
         vector_store.add_texts(
-            [chunk], 
+            batch, 
             metadatas=[{"video_id": video_id, "type": "video_visual_description"}]
         )
-    
+
+        # Yield control to allow other tasks to run
+        await asyncio.sleep(0)
+
     logging.info(f"[{session_id}] Video data upload complete")
 
 def cleanup_files(session_id):
@@ -310,6 +324,7 @@ async def retrieve_context_for_querying(vector_store, video_id, context_type, se
     logging.info(f"[{session_id}] {context_type.capitalize()} context retrieved: {len(context)} chunks found")
     return context
 
+@retry(wait=wait_random_exponential(min=1, max=60), stop=stop_after_attempt(6))
 async def chat_with_video(session_id, video_title, transcript_context, video_visual_description_context, channel_name, video_description):
     logging.info(f"[{session_id}] Starting chat with video: {video_title}")
     client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
@@ -330,11 +345,7 @@ async def chat_with_video(session_id, video_title, transcript_context, video_vis
     Visual Descriptions of Video:
     {video_visual_description_str}
 
-    Your primary task is to engage in a natural, conversational manner while answering questions about a YouTube video. You will be provided with the video's title, transcript, and visual descriptions of its frames. When responding to questions, seamlessly incorporate and reason about the temporal data, such as timestamps associated with both the transcript and visual descriptions.
-
-    For example, if a user asks what's happening at a specific time, like one minute into the video, your response should naturally weave together what is being said and what is visually occurring at that moment. Your answers should be clear, detailed, and fluid, offering a comprehensive understanding of the content at that specific timestamp.
-
-    Additionally, if you encounter equations that are improperly formatted or incompatible with LaTeX rendering, ensure they are corrected and properly formatted using LaTeX. Use single dollar signs ($) for inline equations and double dollar signs ($$) for larger, more visual equations.
+    Your primary task is to engage in a natural, conversational manner while answering questions about a YouTube video...
     """
 
     cl.user_session.set(
@@ -342,8 +353,6 @@ async def chat_with_video(session_id, video_title, transcript_context, video_vis
         [{"role": "system", "content": system_message}],
     )
 
-    logging.info(f"[{session_id}] System prompt being sent to language model:\n{system_message}")
-    
     @cl.on_message
     async def handle_message(message: cl.Message):
         logging.info(f"[{session_id}] User message received")
@@ -354,7 +363,7 @@ async def chat_with_video(session_id, video_title, transcript_context, video_vis
         await msg.send()
 
         stream = await client.chat.completions.create(
-            messages=message_history, stream=True, model="gpt-4o-mini", temperature=0.7
+            messages=message_history, stream=True, model="gpt-4o", temperature=0.7
         )
 
         async for part in stream:
@@ -366,11 +375,6 @@ async def chat_with_video(session_id, video_title, transcript_context, video_vis
 
     logging.info(f"[{session_id}] Chat initialized with video context")
 
-import asyncio
-
-import asyncio
-
-import asyncio
 
 @cl.on_chat_start
 async def main():
@@ -492,6 +496,7 @@ When you're ready, paste a YouTube URL into the input box to begin your interact
 
             # Upload video data
             await upload_video_data(video_data_vectorstore, transcript, video_visual_descriptions, video_title, channel_name, video_description, video_id, session_id)
+            await asyncio.sleep(5)
             logging.info(f"[{session_id}] Upload complete.")
 
             # Update 6: Upload complete, retrieving video data

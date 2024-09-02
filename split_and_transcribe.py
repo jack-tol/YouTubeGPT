@@ -3,6 +3,7 @@ from pydub import AudioSegment
 from datetime import timedelta
 import logging
 import aiohttp
+from tenacity import retry, stop_after_attempt, wait_random_exponential, retry_if_exception_type
 import asyncio
 
 API_KEY = os.getenv("OPENAI_API_KEY")
@@ -13,19 +14,19 @@ def format_time(seconds):
     return str(timedelta(seconds=round(seconds)))
 
 # Asynchronous function to process a single audio chunk
+@retry(wait=wait_random_exponential(min=1, max=60), stop=stop_after_attempt(6), retry=retry_if_exception_type(aiohttp.ClientResponseError))
 async def process_chunk(file_info, session_id):
     file_path, chunk_start_time = file_info
     headers = {
         "Authorization": f"Bearer {API_KEY}"
     }
-    
-    # Use FormData to handle file upload
+
     data = aiohttp.FormData()
     data.add_field('model', 'whisper-1')
     data.add_field('response_format', 'verbose_json')
     data.add_field('timestamp_granularities', 'segment')
     data.add_field('file', open(file_path, 'rb'), filename=os.path.basename(file_path), content_type='audio/wav')
-    
+
     async with aiohttp.ClientSession() as session:
         async with session.post(API_URL, headers=headers, data=data) as response:
             if response.status == 200:
@@ -33,16 +34,16 @@ async def process_chunk(file_info, session_id):
             else:
                 logging.error(f"[{session_id}] Error in transcription request: {response.status}")
                 return [], chunk_start_time  # Return an empty list if there was an error
-    
+
     adjusted_segments = []
     for segment in transcript.get('segments', []):
-        # Adjust the start and end time based on the chunk's start time
         segment['start'] += chunk_start_time
         segment['end'] += chunk_start_time
         adjusted_segments.append(segment)
-    
+
     logging.info(f"[{session_id}] Processed chunk starting at {format_time(chunk_start_time)}")
     return adjusted_segments, chunk_start_time
+
 
 # Function to format the transcript segments
 def format_transcript(segments, session_id):

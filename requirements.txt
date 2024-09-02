@@ -9,3 +9,5 @@ langchain
 langchain_pinecone
 google-api-python-client
 pydub
+celery
+tenacity
