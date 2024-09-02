@@ -1,9 +1,9 @@
-app = "youtube-gpt"  # Replace with your Fly.io app name
+app = "youtube-gpt"
 
-primary_region = "syd"  # Replace with your preferred region
+primary_region = "syd"
 
 [build]
-  dockerfile = "Dockerfile"  # Specifies the Dockerfile to use
+  dockerfile = "Dockerfile"
 
 [env]
   PORT = "8080"
@@ -17,6 +17,6 @@ primary_region = "syd"  # Replace with your preferred region
   processes = ['app']
 
 [[vm]]
-  memory = '8gb'            # Set memory to 8GB
-  cpu_kind = 'performance'    # Switch to dedicated CPU
-  cpus = 1                  # Set to 2 dedicated CPUs
+  memory = '8gb'
+  cpu_kind = 'performance'
+  cpus = 1

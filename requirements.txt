@@ -7,5 +7,5 @@ opencv-python
 openai
 langchain
 langchain_pinecone
-beautifulsoup4
+google-api-python-client
 pydub

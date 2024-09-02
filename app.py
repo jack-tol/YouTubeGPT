@@ -1,5 +1,5 @@
 import uuid
-from pytubefix import YouTube, Channel
+from pytubefix import YouTube
 import chainlit as cl
 import aiofiles
 import aiohttp
@@ -7,14 +7,12 @@ from moviepy.editor import VideoFileClip
 import cv2
 import os
 import base64
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from openai import AsyncOpenAI
 from langchain_pinecone import *
 import asyncio
 import shutil
 import logging
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from bs4 import BeautifulSoup
 import re
 
 from split_and_transcribe import split_audio, transcribe_audio_chunks
