@@ -31,14 +31,17 @@ video_data_vectorstore = asyncio.run(initialize_embeddings())
 def is_valid_youtube_url(url):
     youtube_regex = (
         r"^(https?://)?(www\.)?(youtube\.com|youtu\.be)/"
-        r"(watch\?v=|embed/|v/|youtu\.be/|.+\?v=)?([^&=%\?]{11})")
+        r"(watch\?v=|embed/|v/|shorts/|youtu\.be/|.+\?v=)?([^&=%\?]{11})"
+    )
     match = re.match(youtube_regex, url)
     return bool(match)
 
+
 def extract_video_id(url):
-    # Regex patterns for different YouTube URL formats
+    # Regex patterns for different YouTube URL formats including Shorts
     patterns = [
-        r"(?:v=|v/|embed/|youtu\.be/|watch\?v=|be/|youtu\.be/)([^&=%\?]{11})"
+        r"(?:v=|v/|embed/|youtu\.be/|watch\?v=|be/|youtu\.be/)([^&=%\?]{11})",  # Regular YouTube URLs
+        r"(?:youtube\.com/shorts/)([^&=%\?]{11})"  # YouTube Shorts URLs
     ]
     
     video_id = None
@@ -55,14 +58,19 @@ def extract_video_id(url):
         logging.error(f"Could not extract video ID from URL: {url}")
         return None
 
+
 async def download_youtube_video(url, session_id):
     logging.info(f"[{session_id}] Downloading YouTube video from URL: {url}")
-    yt = YouTube(url, use_oauth=True, allow_oauth_cache=True, token_file="tokens.json")
+    
+    yt = YouTube(url, client='MWEB', use_oauth=True, allow_oauth_cache=True, token_file="tokens.json")
+    
     video_title = yt.title
     video_stream = yt.streams.get_highest_resolution()
     video_path = f"{session_id}_video.mp4"
+    
     await asyncio.to_thread(video_stream.download, filename=video_path)
     logging.info(f"[{session_id}] Downloaded video titled: {video_title}")
+    
     return video_path, video_title
 
 async def extract_audio_from_video(video_file_path, session_id):
@@ -456,6 +464,8 @@ When you're ready, paste a YouTube URL into the input box to begin your interact
             # Update 1: Video is being downloaded
             status_msg = cl.Message(content="**It seems that video isn't currently in our database. The video is being downloaded...**")
             await status_msg.send()
+            
+            await asyncio.sleep(0)
 
             # Download the video
             video_file_path, video_title = await download_youtube_video(video_url, session_id)
