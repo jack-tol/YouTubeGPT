@@ -62,7 +62,7 @@ def extract_video_id(url):
 async def download_youtube_video(url, session_id):
     logging.info(f"[{session_id}] Downloading YouTube video from URL: {url}")
     
-    yt = YouTube(url, client='MWEB', use_oauth=True, allow_oauth_cache=True, token_file="tokens.json")
+    yt = YouTube(url, client='ANDROID', use_oauth=True, allow_oauth_cache=True, token_file="tokens.json")
     
     video_title = yt.title
     video_stream = yt.streams.get_highest_resolution()
