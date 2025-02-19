@@ -1,13 +1,4 @@
-pytubefix==6.14.0
-chainlit==1.1.300
-aiofiles
-aiohttp
-moviepy
-opencv-python
+chainlit
+requests
 openai
-langchain
-langchain_pinecone
-google-api-python-client
-pydub
-celery
-tenacity
+python-dotenv

@@ -1,11 +1,8 @@
-/* Hide specific GitHub link */
 a[href*='https://github.com/Chainlit/chainlit']
 {
   visibility: hidden !important;
 }
 
-#header img {
-  max-height: 52px !important;
-  margin-left: 11px !important;
-  margin-top: 25px !important;
+.logo {
+  display: none !important;
 }
