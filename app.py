@@ -53,7 +53,7 @@ async def welcome_message():
     cl.user_session.set("message_history", [])
     cl.user_session.set("video_mode", False)
 
-    await cl.Message(content="""### Welcome to YouTubeGPT  
+    await cl.Message(content="""## Welcome to YouTubeGPT  
 
 YouTubeGPT allows you to ask questions and get detailed insights about a YouTube video.  
 
