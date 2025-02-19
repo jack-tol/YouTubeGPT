@@ -75,7 +75,7 @@ async def handle_user_input(message: cl.Message):
         video_url = message.content.strip()
 
         if not is_valid_youtube_url(video_url):
-            await cl.Message(content="❌ **Invalid URL!** Please enter a valid **YouTube video URL.**").send()
+            await cl.Message(content="**Invalid URL!** Please enter a valid **YouTube video URL.**").send()
             return
 
         video_data = await fetch_video_data(video_url)
