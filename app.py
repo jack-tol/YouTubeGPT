@@ -3,6 +3,12 @@ import json
 from openai import AsyncOpenAI
 import aiohttp
 import chainlit as cl
+from dotenv import load_dotenv
+
+load_dotenv(override=True)
+
+client = AsyncOpenAI()
+MODEL_TEMPERATURE = 0.2
 
 tool_schemas = [
     {
@@ -33,12 +39,7 @@ async def fetch_video_data(video_id):
             print(f"Retrieved video data for the video title '{video_data.get('video_name', 'Unknown Title')}' by Channel '{video_data.get('channel_name', 'Unknown Channel')}'")
             return video_data
 
-client = AsyncOpenAI()
-MODEL_TEMPERATURE = 0.2
-
-tool_functions = {
-    "fetch_video_data": fetch_video_data
-}
+tool_functions = {"fetch_video_data": fetch_video_data}
 
 async def call_gpt(message_history, assistant_message):
     stream = await client.chat.completions.create(
