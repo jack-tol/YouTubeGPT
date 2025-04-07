@@ -1,4 +1,2 @@
-Dockerfile
-fly.toml
 .chainlit/translations
 .env
