@@ -43,7 +43,7 @@ tool_functions = {"fetch_video_data": fetch_video_data}
 
 async def call_gpt(message_history, assistant_message):
     stream = await client.chat.completions.create(
-        model="gpt-4o",
+        model="gpt-4.1-mini",
         messages=message_history,
         tools=tool_schemas,
         tool_choice="auto",
