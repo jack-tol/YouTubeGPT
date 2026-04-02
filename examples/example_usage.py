@@ -1,4 +1,9 @@
 import json
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 from tools import scrape_video_data
 
 video_data = scrape_video_data("ORMx45xqWkA")

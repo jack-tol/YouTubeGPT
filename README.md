@@ -43,7 +43,7 @@ YouTubeGPT is designed for students, researchers, and content consumers who want
 
 ## YouTube Scraping Tool Usage
 
-After installing the requirements, simply run the `example_usage.py` script. This script imports the tool and runs data scraping on a YouTube video. The function takes the YouTube video ID as an argument and returns a JSON object containing all of the scraped data for further use. The script then prints the result to demonstrate the format and scope of the retrieved data.
+After installing the requirements, simply run the `examples/example_usage.py` script. This script imports the tool and runs data scraping on a YouTube video. The function takes the YouTube video ID as an argument and returns a JSON object containing all of the scraped data for further use. The script then prints the result to demonstrate the format and scope of the retrieved data.
 
 ## Run It Yourself
 
