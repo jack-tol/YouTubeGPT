@@ -16,7 +16,3 @@
 .logo {
   display: none !important;
 }
-
-#chat-input:empty::before {
-  content: 'Message YouTubeGPT';
-}

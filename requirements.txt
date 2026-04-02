@@ -1,4 +1,3 @@
-aiohttp
 chainlit
 requests
 openai

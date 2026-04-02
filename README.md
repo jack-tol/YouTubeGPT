@@ -8,11 +8,6 @@ YouTubeGPT extracts and processes key video information—including the title, t
 
 If you're interested in about the motivation & rationale of YouTubeGPT, check out the [blog post](https://jacktol.net/posts/introducing_youtubegpt/).
 
-## Important Links
-
-- [Hosted Web Application](https://youtubegpt.net/)
-- [Blog and Additional Resources](https://jacktol.net/posts/introducing_youtubegpt/)
-
 ## How does it work?
 
 YouTubeGPT simplifies video analysis by turning YouTube videos into an interactive text-based experience. Instead of manually searching through a video, users can ask direct questions and receive detailed, AI-generated responses.
@@ -45,5 +40,13 @@ YouTubeGPT simplifies video analysis by turning YouTube videos into an interacti
 ## YouTubeGPT in Action
 
 YouTubeGPT is designed for students, researchers, and content consumers who want a faster, more interactive way to engage with video material. Whether you need a high-level summary or an in-depth breakdown, this tool streamlines the process of consuming YouTube content.
+
+## YouTube Scraping Tool Usage
+
+After installing the requirements, simply run the `example_usage.py` script. This script imports the tool and runs data scraping on a YouTube video. The function takes the YouTube video ID as an argument and returns a JSON object containing all of the scraped data for further use. The script then prints the result to demonstrate the format and scope of the retrieved data.
+
+## Run It Yourself
+
+After installing the requirements, simply add your `OPENAI_API_KEY` to a `.env` file, then run `chainlit run app.py` in your terminal. The app will open automatically in your web browser, allowing you to submit YouTube video URLs along with your questions in the chat input box and start receiving summaries and answers instantly.
 
 For any inquiries, feedback, or suggestions, reach out via [jacktol.net](https://jacktol.net/).
